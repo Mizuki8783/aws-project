@@ -1,143 +1,61 @@
-## AWS Data Engineering Project: Stream + Batch Pipelines
+# AWS Data Engineering Project: Stream + Batch Pipelines
 
-This repository implements both a real-time streaming pipeline and a scheduled batch pipeline on AWS. It demonstrates end-to-end ingestion, fan-out processing, and storage across DynamoDB, S3, and Redshift, with an AWS Glue job for batch transformations.
+Data Source: [Ecommerce data from Kaggle](https://www.kaggle.com/datasets/carrie1/ecommerce-data)
+
+This project implements both streaming pipeline and batch pipeline on AWS, leveraging multiple services. This project is to demonstrates end-to-end ingestion, fan-out processing, and storage across DynamoDB, S3, and Redshift, with an AWS Glue job for batch transformations.
 
 ![Dataflow](assets/dataflow-diagram.png)
 
-### Stream pipeline
-- **Client → API Gateway (POST)**: Client sends JSON events.
-- **Lambda `kinesis_api`**: Writes the request body to Kinesis stream `api-data`. Also supports a GET to query DynamoDB by `InvoiceNo`.
-- **Kinesis fan-out consumers**:
-  - **Lambda `write_kinesis_to_dynamodb`**: Upserts into DynamoDB tables `customer` and `invoice`.
-  - **Lambda `write_kinesis_to_s3`**: Appends raw events to S3 bucket `mn-de-project` under `aws-project/kinesis-stream/`.
-  - **(Optional) Firehose → Redshift**: Stream data delivery into Redshift (configure in your AWS account).
+## Pipeline Flow
+### Stream pipeline flow
+1. **Client → API Gateway**: Python client to simulate real-time data by sending JSON events to an API Gateway endpoint.
+2. **Writing to Kinesis**: When a request comes in, lambda functinos gets triggered to writes the request body to Kinesis stream.
+3. **Kinesis consumers**: When data comes into the Kinesis stream, 2 lambda functions and Firehose process gets triggered
+  - **Writing to DynamoDB**: Upserts into DynamoDB tables `customer` and `invoice`. The data is made available through via API Gateway.
+  - **Writing to S3**: Appends raw events to S3 bucket. The data is later used in the batch processing.
+  - **Firehose → Redshift**: Stream data delivery into Redshift. The data was then used to
 
-### Batch pipeline
-- **Glue Job `bulkimport_s3_redshift.py`**: Periodically reads curated/raw data in S3 via AWS Glue Data Catalog and loads it into Redshift table `dev_public_bulkimport`, with null-handling and schema mapping.
+### Batch pipeline flow
+- **Glue Job**: Transfers raw data stored in S3 to Redshift by referencing the AWS Glue Data Catalog with null-handling and schema mapping.
 
-## Repository layout
-- `code/client.py`: Simple Python client that POSTs rows from `data/data.csv` to the API Gateway endpoint.
-- `code/lambda/kinesis_api.py`: API Lambda handling POST (write to Kinesis) and GET (read from DynamoDB by `InvoiceNo`).
-- `code/lambda/write_kinesis_to_dynamodb.py`: Kinesis consumer that writes to DynamoDB tables `customer` and `invoice`.
-- `code/lambda/write_kinesis_to_s3.py`: Kinesis consumer that writes raw events to S3 (`mn-de-project/aws-project/kinesis-stream/`).
-- `code/glue/bulkimport_s3_redshift.py`: Glue ETL from S3 (catalog table `s3_bulkimport`) to Redshift (`dev_public_bulkimport`).
-- `code/redshift/check_cost.sql`: Helper SQL to estimate Amazon Redshift Serverless costs by day and query.
-- `data/`: Sample CSVs.
-- `_tmp/Code/Module-*`: Reference IAM policies, Lambda snippets, and SQL used during module work.
+## AWS Tech Stack
+### API & Gateway Services
+- **API Gateway**: REST API endpoint for client requests
 
-## Data contracts
-### Event payload (stream)
-The client sends rows from `data/data.csv` as JSON. Example payload:
+### Compute Services
+- **AWS Lambda**: Serverless functions for stream processing and API handling
 
-```json
-{
-  "InvoiceNo": "536365",
-  "StockCode": "85123A",
-  "Description": "WHITE HANGING HEART T-LIGHT HOLDER",
-  "Quantity": 6,
-  "InvoiceDate": "12/1/2010 8:26",
-  "UnitPrice": 2.55,
-  "CustomerID": "17850",
-  "Country": "United Kingdom"
-}
-```
+### Streaming & Data Processing
+- **Amazon Kinesis Data Streams**: Real-time data streaming
+- **Amazon Kinesis Data Firehose**: Managed delivery to Redshift
+- **AWS Glue**: ETL service with Data Catalog for schema management
 
-### DynamoDB access (query via GET)
-- Endpoint expects querystring parameter `InvoiceNo` and returns the raw DynamoDB item from table `invoice`.
+### Storage Services
+- **Amazon DynamoDB**: NoSQL database for `customer` and `invoice` tables
+- **Amazon S3**: Object storage for raw event data
+- **Amazon Redshift Serverless**: Data warehouse for analytics
 
-## AWS components and configuration
-### API Gateway + Lambda `kinesis_api`
-- POST: Expects JSON body passed through to Lambda. Lambda writes to Kinesis stream `api-data`.
-- GET: Expects `?InvoiceNo=...`. Lambda fetches item from DynamoDB table `invoice`.
-- Note: If using REST API (non-proxy), configure an `application/json` mapping template so Lambda receives fields like `context.http-method`, `body-json`, and `params.querystring.InvoiceNo` as referenced in the code.
+### Security & Networking
+- **IAM**: Identity and access management for service permissions
+- **VPC Endpoints**: Private connectivity for S3, DynamoDB, and other AWS services to avoid internet routing
 
-### Kinesis Data Stream
-- Stream name: `api-data` (update in `code/lambda/kinesis_api.py` if you choose a different name).
+## Improvements to be made
+- **IAM Privilege Management**: Currently using broad permissions for simplicity. Should implement least-privilege access with specific resource ARNs, condition-based policies, and separate roles for each service (Lambda execution, Glue job, Kinesis access).
 
-### DynamoDB tables
-- `invoice` with partition key `InvoiceNo` (String).
-- `customer` with partition key `CustomerID` (String).
-- The Kinesis consumer Lambda stores:
-  - In `invoice`: a wide row keyed by `InvoiceNo`, attributes named by `StockCode` containing the remaining fields as JSON strings.
-  - In `customer`: per-customer attributes keyed by `InvoiceNo` (placeholder value in code; adjust as needed for your UI/analytics).
+- **API Security**: The API Gateway endpoint lacks authentication and authorization mechanisms. Should implement API keys, AWS Cognito user pools, or Lambda authorizers to control access. Rate limiting and request validation should be added to prevent abuse and ensure data integrity.
 
-### S3 bucket
-- Bucket: `mn-de-project` (change in `code/lambda/write_kinesis_to_s3.py` if needed).
-- Prefix for streaming dump: `aws-project/kinesis-stream/`.
+- **VPC Configuration**: Services are currently deployed in default VPC settings. Should implement a proper VPC architecture with private subnets for Lambda functions and database resources, public subnets for NAT gateways, and VPC endpoints for AWS services to keep traffic within the AWS network. Network ACLs and security groups need proper configuration for defense in depth.
 
-### Firehose → Redshift (optional)
-- Configure Kinesis Data Firehose to deliver streaming data to Redshift, or rely on the Glue batch path below.
+## Notes for future projects
+- **Avoid Small Batch Inserts into Redshift**: Each individual INSERT operation in Redshift Serverless gets charged for a minimum of 60 seconds, regardless of actual execution time. This can lead to extremely high costs:
+  - inserts of 300 rows individually = 300 × 60 seconds = 18,000 seconds = 5 hours of billing
+  - At $0.375/RPU-hour with default 8 RPUs = $15 per hour
+  - 5 hours × $15 = $75 just for those inserts!
+  For Firehose, adjust the configuration to use larger buffer sizes and longer buffer intervals to reduce the frequency of small batch loads.
 
-### AWS Glue → Redshift (batch)
-- Glue Data Catalog database: `aws-project`.
-- Source table: `s3_bulkimport` (points to S3 dataset).
-- Target Redshift table (via Catalog integration): `dev_public_bulkimport`.
-- Script applies mapping, selects fields, resolves choices, fills nulls, and writes to Redshift using a temporary S3 dir (`--TempDir`).
+- **Glue and Redshift Connection Setup**: When connecting AWS Glue to Redshift Serverless, several configuration steps are critical:
+  - Create secrets in AWS Secrets Manager containing Redshift username and password
+  - Configure IAM policies for the Glue service role with appropriate permissions
+  - Set up VPC configuration including security groups and VPC endpoints for TST, S3, Secrete Manager, and Redshift.
 
-## Getting started
-### Prerequisites
-- AWS account with permissions for API Gateway, Lambda, Kinesis, DynamoDB, S3, Glue, and Redshift.
-- Python 3.13+ for the sample client.
-- Optionally refer to `_tmp/Code/Module-06` policies as starting points for IAM.
-
-### Deploy high-level steps
-1) Create S3 bucket for raw/curated data (or reuse `mn-de-project`).
-2) Create DynamoDB tables `invoice` (PK `InvoiceNo`, String) and `customer` (PK `CustomerID`, String).
-3) Create Kinesis stream `api-data`.
-4) Deploy Lambdas:
-   - `kinesis_api` (invoke by API Gateway; Kinesis write permissions).
-   - `write_kinesis_to_dynamodb` (triggered by Kinesis; DynamoDB write permissions).
-   - `write_kinesis_to_s3` (triggered by Kinesis; S3 PutObject permissions; update bucket name if needed).
-5) Create API Gateway (REST or HTTP). If not using Lambda proxy integration, add an `application/json` mapping template so the Lambda receives `context/http-method`, `body-json`, and `params/querystring` fields.
-6) (Optional) Configure Firehose to Redshift.
-7) Set up Glue Data Catalog database `aws-project` and table `s3_bulkimport` pointing to your S3 data; then create/run the Glue job using `code/glue/bulkimport_s3_redshift.py`.
-
-### Local client (send events)
-1) Install dependencies (choose one):
-   - pip: `python -m venv .venv && source .venv/bin/activate && pip install -e .`
-   - uv: `uv sync`
-2) Create `.env` in repo root:
-```
-CLIENT_TARGET_ENDPOINT=https://your-api-id.execute-api.your-region.amazonaws.com/your-stage/your-resource
-```
-3) Run: `python code/client.py`
-
-### Example cURL
-- POST an event:
-```bash
-curl -X POST \
-  -H "Content-Type: application/json" \
-  -d '{
-        "InvoiceNo":"536365",
-        "StockCode":"85123A",
-        "Description":"WHITE HANGING HEART T-LIGHT HOLDER",
-        "Quantity":6,
-        "InvoiceDate":"12/1/2010 8:26",
-        "UnitPrice":2.55,
-        "CustomerID":"17850",
-        "Country":"United Kingdom"
-      }' \
-  "$CLIENT_TARGET_ENDPOINT"
-```
-
-- GET by invoice number:
-```bash
-curl "$CLIENT_TARGET_ENDPOINT?InvoiceNo=536365"
-```
-
-## Operations
-- Redshift cost analysis: see `code/redshift/check_cost.sql` and replace placeholders (e.g., RPU price, date) before running.
-- Error hints (from comments in `code/client.py`):
-  - If you see 200 from client but Lambda logs `KeyError: 'context'`, your API mapping template is missing.
-  - For 403 from API Gateway, ensure the deployed resource path (e.g., `/hello`) is included in the URL.
-
-## Configuration summary (update as needed)
-- Kinesis stream: `api-data`.
-- DynamoDB tables: `invoice`, `customer`.
-- S3 bucket/prefix: `mn-de-project/aws-project/kinesis-stream/`.
-- Glue catalog: db `aws-project`, tables `s3_bulkimport` → Redshift `dev_public_bulkimport`.
-
-## Security and costs
-- Apply least-privilege IAM for all services (see `_tmp/Code/Module-06` for examples).
-- Consider S3 encryption, DynamoDB PITR, KMS for streams, and VPC endpoints for private traffic.
-- Monitor costs for Kinesis shards, Lambda invocations, S3 storage/requests, and Redshift (use the SQL helper).
+- **Kinesis Firehose User Configuration**: When setting up Kinesis Firehose to transfer stream data into Redshift Serverless, create a dedicated database user and password first. Firehose requires these credentials to execute queries in Redshift for data loading operations.
