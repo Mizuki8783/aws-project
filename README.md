@@ -2,7 +2,7 @@
 
 Data Source: [Ecommerce data from Kaggle](https://www.kaggle.com/datasets/carrie1/ecommerce-data)
 
-This project implements both streaming pipeline and batch pipeline on AWS, leveraging multiple services. This project is to demonstrates end-to-end ingestion, fan-out processing, and storage across DynamoDB, S3, and Redshift, with an AWS Glue job for batch transformations.
+This project demonstrates the implementation of both streaming and batch data pipelines for end-to-end data ingestion, processing, storage, and serving, leveraging multiple AWS services.
 
 ![Dataflow](assets/dataflow-diagram.png)
 
